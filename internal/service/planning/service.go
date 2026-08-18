@@ -46,23 +46,31 @@ func (s Service) CreateRoute(ctx context.Context, input CreateRouteInput) (workp
 	if err := checks.Err(); err != nil {
 		return workplan.Route{}, apperror.Validation(err)
 	}
-	now := s.Clock.Now()
-	route, err := workplan.NewRoute(s.IDs.NewID("route"), input.Code, input.Name, input.Zone, input.RequiredCapacityKg, now)
+	var result workplan.Route
+	err := s.Store.WithTx(ctx, func(ctx context.Context, tx repository.Tx) error {
+		now := s.Clock.Now()
+		route, err := workplan.NewRoute(s.IDs.NewID("route"), input.Code, input.Name, input.Zone, input.RequiredCapacityKg, now)
+		if err != nil {
+			return err
+		}
+		auditEvent := audit.Event{
+			ID: s.IDs.NewID("audit"), ActorID: input.ActorID, EntityType: "route", EntityID: route.ID,
+			Action: "create", Result: "success", RequestID: input.RequestID,
+			Metadata: map[string]any{"code": route.Code}, CreatedAt: now,
+		}
+		if err := tx.SaveRoute(ctx, route); err != nil {
+			return apperror.Wrap("save route", err)
+		}
+		if err := tx.AppendAudit(ctx, auditEvent); err != nil {
+			return apperror.Wrap("audit route", err)
+		}
+		result = route
+		return nil
+	})
 	if err != nil {
 		return workplan.Route{}, err
 	}
-	auditEvent := audit.Event{
-		ID: s.IDs.NewID("audit"), ActorID: input.ActorID, EntityType: "route", EntityID: route.ID,
-		Action: "create", Result: "success", RequestID: input.RequestID,
-		Metadata: map[string]any{"code": route.Code}, CreatedAt: now,
-	}
-	if err := s.Store.SaveRoute(ctx, route); err != nil {
-		return workplan.Route{}, apperror.Wrap("save route", err)
-	}
-	if err := s.Store.AppendAudit(ctx, auditEvent); err != nil {
-		return workplan.Route{}, apperror.Wrap("audit route", err)
-	}
-	return route, nil
+	return result, nil
 }
 
 func (s Service) CreateShift(ctx context.Context, input CreateShiftInput) (workplan.Shift, error) {
